@@ -34,13 +34,14 @@ class ReqMeta:
     @staticmethod
     def make_meta(request_id: str, token_ids: list[int], block_ids: list[int],
                   block_size: int) -> "ReqMeta":
+        valid_num_tokens = len(token_ids)
         token_ids_tensor = torch.tensor(token_ids)
         block_ids_tensor = torch.tensor(block_ids)
         num_blocks = block_ids_tensor.shape[0]
         block_offsets = torch.arange(0, block_size)
         slot_mapping = block_offsets.reshape((1, block_size)) + \
-                       block_ids_tensor.reshape((num_blocks, 1)) * block_size
-        slot_mapping = slot_mapping.flatten()
+                block_ids_tensor.reshape((num_blocks, 1)) * block_size
+        slot_mapping = slot_mapping.flatten()[:valid_num_tokens]
         return ReqMeta(
             request_id=request_id,
             token_ids=token_ids_tensor,
@@ -103,6 +104,8 @@ class P2pNcclConnector(KVConnectorBase_V1):
             The number of elements in kv_caches and layer_names should be
             the same.
         """
+        assert self.p2p_nccl_pipe is not None
+
         attn_metadata = forward_context.attn_metadata
 
         def inject_kv_into_layer(
@@ -196,6 +199,7 @@ class P2pNcclConnector(KVConnectorBase_V1):
             attn_metadata (AttentionMetadata): the attention metadata.
             **kwargs: additional arguments for the save operation.
         """
+        assert self.p2p_nccl_pipe is not None
 
         def extract_kv_from_layer(
             layer: torch.Tensor,
@@ -227,7 +231,9 @@ class P2pNcclConnector(KVConnectorBase_V1):
                                                kv_cache, remote_address)
 
     def wait_for_save(self):
-        return
+        if self.is_producer:
+            assert self.p2p_nccl_pipe is not None
+            self.p2p_nccl_pipe.wait_for_sent()
 
     def get_num_new_matched_tokens(
         self,
@@ -247,7 +253,17 @@ class P2pNcclConnector(KVConnectorBase_V1):
             the number of tokens that can be loaded from the
             external KV cache beyond what is already computed.
         """
-        return 0
+        if self.is_producer:
+            return 0
+
+        num_external_tokens = (len(request.prompt_token_ids) - 1 -
+                               num_computed_tokens)
+        logger.info(
+            "🍒num_external_tokens:%d, num_prompt_tokens:%d, "
+            "num_computed_tokens:%d", num_external_tokens,
+            len(request.prompt_token_ids), num_computed_tokens)
+
+        return num_external_tokens
 
     def update_state_after_alloc(self, request: "Request",
                                  num_external_tokens: int):
@@ -257,7 +273,7 @@ class P2pNcclConnector(KVConnectorBase_V1):
         If blocks were allocated, add to _requests_need_load,
         such that we load the KVs in the next forward pass.
         """
-        if not self.is_producer:
+        if not self.is_producer and num_external_tokens > 0:
             self._requests_need_load[request.request_id] = request
 
     def build_connector_meta(

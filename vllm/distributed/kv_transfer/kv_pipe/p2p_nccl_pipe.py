@@ -68,7 +68,9 @@ class P2pNcclPipe:
         self.send_store_cv = threading.Condition()
         self.send_queue_cv = threading.Condition()
         self.recv_store_cv = threading.Condition()
-        self.comm_cv = threading.Condition()
+
+        self.send_stream = torch.cuda.Stream()
+        self.recv_stream = torch.cuda.Stream()
 
         # The sending type includes tree mutually exclusive options:
         # PUT, GET, PUT_ASYNC.
@@ -230,7 +232,7 @@ class P2pNcclPipe:
                              device=self.device)
 
         start_time = time.time()
-        self._recv(comm, tensor, rank ^ 1)
+        self._recv(comm, tensor, rank ^ 1, self.recv_stream)
         duration = time.time() - start_time
         logger.info(
             "🔵[GET]Recv From %s, tensor_id:%s, shape:%s, duration:%.3fms, "
@@ -282,8 +284,9 @@ class P2pNcclPipe:
                             self.router_socket.send_multipart(
                                 [remote_address, b"0"])
                             comm, rank = self.comms[remote_address.decode()]
-                            self._recv(comm, tensor, rank ^ 1)
-                            logger.debug(
+                            self._recv(comm, tensor, rank ^ 1,
+                                       self.recv_stream)
+                            logger.info(
                                 "🔵[PUT]Recv Tensor, %s👈%s, MyRank:%s, "
                                 "data:%s, shape:%s", self.zmq_address,
                                 remote_address.decode(), rank, data,
@@ -322,7 +325,9 @@ class P2pNcclPipe:
                         [remote_address, msgpack.dumps(data)])
 
                     if data["ret"] == 0:
-                        self._send(comm, tensor.to(self.device), rank ^ 1)
+                        comm, rank = self.comms[remote_address.decode()]
+                        self._send(comm, tensor.to(self.device), rank ^ 1,
+                                   self.send_stream)
 
                     logger.info(
                         "🔵[GET]Send Tensor, %s👉%s, "
@@ -333,15 +338,26 @@ class P2pNcclPipe:
                         "🚧Unexpected, Received message from %s, data:%s",
                         remote_address, data)
 
-    # Asynchronous sending may cause conflicts between P2P NCCL and
-    # NCCL used in TP/PP, which can lead to deadlock issues.
     def _send_async(self):
         while True:
             with self.send_queue_cv:
                 while not self.send_queue:
                     self.send_queue_cv.wait()
                 tensor_id, remote_address, tensor = self.send_queue.popleft()
+                if not self.send_queue:
+                    self.send_queue_cv.notify()
             self._send_sync(tensor_id, tensor, remote_address)
+
+    def wait_for_sent(self):
+        if self.send_type == "PUT_ASYNC":
+            start_time = time.time()
+            with self.send_queue_cv:
+                while self.send_queue:
+                    self.send_queue_cv.wait()
+            duration = time.time() - start_time
+            logger.info(
+                "🚧[PUT_ASYNC]It took %.3fms to wait for the send_queue"
+                " to be empty, rank:%d", duration * 1000, self.rank)
 
     def _send_sync(
         self,
@@ -377,7 +393,7 @@ class P2pNcclPipe:
                 response.decode())
             return False
 
-        self._send(comm, tensor.to(self.device), rank ^ 1)
+        self._send(comm, tensor.to(self.device), rank ^ 1, self.send_stream)
         logger.info("🔵Send Tensor, %s👉%s, MyRank:%s, data:%s, tensor:%s",
                     self.zmq_address, remote_address, rank, data, tensor.shape)
         return True
@@ -403,7 +419,7 @@ class P2pNcclPipe:
         if stream is None:
             stream = current_stream()
 
-        with self.comm_cv:
+        with torch.cuda.stream(stream):
             self.nccl.ncclSend(buffer_type(tensor.data_ptr()), tensor.numel(),
                                ncclDataTypeEnum.from_torch(tensor.dtype), dst,
                                comm, cudaStream_t(stream.cuda_stream))
@@ -415,7 +431,7 @@ class P2pNcclPipe:
         if stream is None:
             stream = current_stream()
 
-        with self.comm_cv:
+        with torch.cuda.stream(stream):
             self.nccl.ncclRecv(buffer_type(tensor.data_ptr()), tensor.numel(),
                                ncclDataTypeEnum.from_torch(tensor.dtype), src,
                                comm, cudaStream_t(stream.cuda_stream))
