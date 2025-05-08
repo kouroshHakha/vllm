@@ -15,6 +15,7 @@ class GenerationRequest(BaseModel):
     prompt: str
     max_tokens: int
     stream: bool = False
+    request_id: str = None
 
 class ProxyService:
     def __init__(self, ip: str, port: int, prefill_url: str, decode_url: str):
@@ -34,12 +35,13 @@ class ProxyService:
         @self.app.post("/generate")
         async def generate(request: GenerationRequest):
             # Generate a unique request_id
-            request_id = str(uuid.uuid4())
-            logger.info(f"Received generation request with assigned request_id: {request_id}")
+            if not request.request_id:
+                request.request_id = str(uuid.uuid4())
+            logger.info(f"Received generation request with assigned request_id: {request.request_id}")
             
             # Send requests to both prefill and decode services
             response = await self.send_requests(
-                request_id=request_id,
+                request_id=request.request_id,
                 prompt=request.prompt,
                 max_tokens=request.max_tokens,
                 stream=request.stream
@@ -53,20 +55,23 @@ class ProxyService:
             # Schedule both requests concurrently
             prefill_task = asyncio.create_task(
                 self.client.post(
-                    f"{self.prefill_url}/prefill",
+                    f"{self.prefill_url}/generate",
                     json={
                         "request_id": request_id,
                         "prompt": prompt,
-                        "max_tokens": 1  # Just compute KV cache
+                        "max_tokens": 1,
+                        "stream": False,
                     }
                 )
             )
             decode_task = asyncio.create_task(
                 self.client.post(
-                    f"{self.decode_url}/decode",
+                    f"{self.decode_url}/generate",
                     json={
                         "request_id": request_id,
-                        "max_tokens": max_tokens
+                        "prompt": prompt,
+                        "max_tokens": max_tokens,
+                        "stream": True,
                     }
                 )
             )
@@ -81,6 +86,7 @@ class ProxyService:
 
         except Exception as e:
             logger.error(f"Error sending requests: {e}")
+            return {"error": str(e)}
     
     def start(self):
         """Start the FastAPI server"""

@@ -10,13 +10,12 @@ from fastapi import FastAPI, BackgroundTasks
 import uvicorn
 from pydantic import BaseModel
 import asyncio
+from proxy import GenerationRequest
+
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("prefill")
 
-class PrefillRequest(BaseModel):
-    prompt: str
-    max_tokens: int
-    request_id: str = None
 
 class PrefillWorker:
     def __init__(self, rank: int, ip: str, port: int, zmq_ip: str, zmq_port: int):
@@ -136,8 +135,8 @@ class PrefillService:
         self.setup_routes()
     
     def setup_routes(self):
-        @self.app.post("/prefill")
-        async def prefill(request: PrefillRequest):
+        @self.app.post("/generate")
+        async def generate(request: GenerationRequest):
             # Generate a request_id if not provided
             if not request.request_id:
                 request.request_id = str(uuid.uuid4())

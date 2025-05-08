@@ -10,13 +10,10 @@ import asyncio
 from fastapi import FastAPI, BackgroundTasks
 import uvicorn
 from pydantic import BaseModel
+from proxy import GenerationRequest
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("decode")
-
-class DecodeRequest(BaseModel):
-    request_id: str
-    max_tokens: int
 
 class DecodeWorker:
     def __init__(self, rank: int, ip: str, port: int, zmq_ip: str, zmq_port: int):
@@ -130,8 +127,8 @@ class DecodeService:
         self.setup_routes()
     
     def setup_routes(self):
-        @self.app.post("/decode")
-        async def decode(request: DecodeRequest):
+        @self.app.post("/generate")
+        async def generate(request: GenerationRequest):
             logger.info(f"Received decode request: {request}")
             
             # Start processing on all ranks in the background
