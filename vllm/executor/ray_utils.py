@@ -113,6 +113,8 @@ try:
                     # Not needed
                     pass
                 else:
+                    import torch
+                    _ = torch.zeros(1, device=self.worker.device)
                     current_platform.set_device(self.worker.device)
 
                 self.compiled_dag_cuda_device_set = True
