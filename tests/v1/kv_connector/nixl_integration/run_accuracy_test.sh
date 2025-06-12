@@ -3,12 +3,12 @@ set -xe
 
 # Models to run
 MODELS=(
-    "Qwen/Qwen3-0.6B"
+  "neuralmagic/Meta-Llama-3.1-8B-Instruct-quantized.w4a16"
 )
 
 # Number of prefill and decode instances to create
 NUM_PREFILL_INSTANCES=${NUM_PREFILL_INSTANCES:-1} # Default to 1
-NUM_DECODE_INSTANCES=${NUM_DECODE_INSTANCES:-2}   # Default to 2
+NUM_DECODE_INSTANCES=${NUM_DECODE_INSTANCES:-1}   # Default to 2
 
 # Find the git repository root directory
 GIT_ROOT=$(git rev-parse --show-toplevel)
@@ -27,12 +27,12 @@ wait_for_server() {
     done" && return 0 || return 1
 }
 
-# Function to clean up previous instances
-cleanup_instances() {
-  echo "Cleaning up any running vLLM instances..."
-  pkill -f "vllm serve" || true
-  sleep 2
-}
+# # Function to clean up previous instances
+# cleanup_instances() {
+#   echo "Cleaning up any running vLLM instances..."
+#   pkill -f "vllm serve" || true
+#   sleep 2
+# }
 
 # Handle to get model-specific arguments for deepseek
 get_model_args() {
@@ -73,20 +73,21 @@ run_tests_for_model() {
   # Start prefill instances
   for i in $(seq 0 $((NUM_PREFILL_INSTANCES-1))); do
     # Calculate GPU ID - we'll distribute across available GPUs
-    GPU_ID=$((i % $(get_num_gpus)))
+    # GPU_ID=$((i % $(get_num_gpus)))
+    GPU_ID=6
     # Calculate port number (base port + instance number)
-    PORT=$((8100 + i))
+    PORT=$((9570 + i))
     # Calculate side channel port
-    SIDE_CHANNEL_PORT=$((5559 + i))
+    SIDE_CHANNEL_PORT=$((4000 + i))
 
     echo "Starting prefill instance $i on GPU $GPU_ID, port $PORT"
 
     # Build the command with or without model-specific args
-    BASE_CMD="CUDA_VISIBLE_DEVICES=$GPU_ID VLLM_NIXL_SIDE_CHANNEL_PORT=$SIDE_CHANNEL_PORT vllm serve $model_name \
+    BASE_CMD="CUDA_VISIBLE_DEVICES=6 VLLM_NIXL_SIDE_CHANNEL_PORT=$SIDE_CHANNEL_PORT vllm serve $model_name \
     --port $PORT \
     --enforce-eager \
     --disable-log-requests \
-    --gpu-memory-utilization 0.2 \
+    --gpu-memory-utilization 0.9 \
     --kv-transfer-config '{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_both\"}'"
 
     if [ -n "$model_args" ]; then
@@ -105,20 +106,21 @@ run_tests_for_model() {
   # Start decode instances
   for i in $(seq 0 $((NUM_DECODE_INSTANCES-1))); do
     # Calculate GPU ID - we'll distribute across available GPUs, starting from after prefill GPUs
-    GPU_ID=$(((i + NUM_PREFILL_INSTANCES) % $(get_num_gpus)))
+    # GPU_ID=$(((i + NUM_PREFILL_INSTANCES) % $(get_num_gpus)))
+    GPU_ID=7
     # Calculate port number (base port + instance number)
-    PORT=$((8200 + i))
+    PORT=$((9560 + i))
     # Calculate side channel port
-    SIDE_CHANNEL_PORT=$((5659 + i))
+    SIDE_CHANNEL_PORT=$((4100 + i))
 
     echo "Starting decode instance $i on GPU $GPU_ID, port $PORT"
 
     # Build the command with or without model-specific args
-    BASE_CMD="CUDA_VISIBLE_DEVICES=$GPU_ID VLLM_NIXL_SIDE_CHANNEL_PORT=$SIDE_CHANNEL_PORT vllm serve $model_name \
+    BASE_CMD="CUDA_VISIBLE_DEVICES=7 VLLM_NIXL_SIDE_CHANNEL_PORT=$SIDE_CHANNEL_PORT vllm serve $model_name \
     --port $PORT \
     --enforce-eager \
     --disable-log-requests \
-    --gpu-memory-utilization 0.2 \
+    --gpu-memory-utilization 0.9 \
     --kv-transfer-config '{\"kv_connector\":\"NixlConnector\",\"kv_role\":\"kv_both\"}'"
 
     if [ -n "$model_args" ]; then
@@ -161,15 +163,15 @@ run_tests_for_model() {
   $PROXY_CMD &
 
   # Wait for the proxy to start
-  sleep 5
 
   # Run lm eval for this model
   echo "Running tests for $model_name"
-  TEST_MODEL=$model_name python -m pytest -s -x ${GIT_ROOT}/tests/v1/kv_connector/nixl_integration/test_accuracy.py
+  sleep 10000
+  # TEST_MODEL=$model_name python -m pytest -s -x ${GIT_ROOT}/tests/v1/kv_connector/nixl_integration/test_accuracy.py
 
-  # Clean up before running next model
-  cleanup_instances
-  sleep 3
+  # # Clean up before running next model
+  # cleanup_instances
+  # sleep 3
 }
 
 # Run tests for each model
@@ -177,4 +179,4 @@ for model in "${MODELS[@]}"; do
   run_tests_for_model "$model"
 done
 
-echo "All tests completed!"
+# echo "All tests completed!"

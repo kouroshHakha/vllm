@@ -80,6 +80,7 @@ class AsyncLLM(EngineClient):
         Returns:
             None
         """
+        logger.info("In AsyncLLM init")
         if not envs.VLLM_USE_V1:
             raise ValueError(
                 "Using V1 AsyncLLMEngine, but envs.VLLM_USE_V1=False. "
