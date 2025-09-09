@@ -431,8 +431,24 @@ class NixlConnectorWorker:
         self.vllm_config = vllm_config
         self.block_size = vllm_config.cache_config.block_size
 
-        # Agent.
-        self.nixl_wrapper = NixlWrapper(str(uuid.uuid4()), None)
+        # # Agent.
+        # self.nixl_wrapper = NixlWrapper(str(uuid.uuid4()), None)
+        
+        # ROB's PATCH: BATCHING THE TRANSFER
+        import os
+        # setting num_workers on the prefiller causes no notifs to be recved???
+        # this is a hack to make sure we set num workers on the prefiller to 1.
+        if os.getenv("VLLM_IS_PREFILL", "0") == "1":
+            kwargs = {}
+        else:
+            kwargs = {
+                "num_shared_workers": 32
+            }
+        print(f"NUM_WORKERS: {kwargs.get('num_shared_workers', None)}")
+        self.nixl_wrapper = NixlWrapper(str(uuid.uuid4()),
+                                        None,
+                                        **kwargs)
+        
         # Map of engine_id -> {rank0: agent_name0, rank1: agent_name1..}.
         self._remote_agents: dict[EngineId, dict[int, str]] = defaultdict(dict)
 
@@ -1060,21 +1076,29 @@ class NixlConnectorWorker:
             set of req_ids that have all done xfers
         """
         done_req_ids: set[str] = set()
-        for req_id, handles in list(transfers.items()):
+        for req_id, (handles, agent_name, notif_id, start_time) in list(transfers.items()):
             in_progress = False
-            for handle, _xfer_stime in handles:
+            new_handles = []
+            # for handle, _xfer_stime in handles:
+            for handle in handles:
                 xfer_state = self.nixl_wrapper.check_xfer_state(handle)
                 if xfer_state == "DONE":
                     self.nixl_wrapper.release_xfer_handle(handle)
                 elif xfer_state == "PROC":
                     in_progress = True
+                    new_handles.append(handle)
                     continue
                 else:
                     raise RuntimeError("Transfer failed with state %s",
                                        xfer_state)
             if not in_progress:
+                self.nixl_wrapper.send_notif(agent_name, notif_id)
                 done_req_ids.add(req_id)
                 del transfers[req_id]
+            else:
+                transfers[req_id] = (new_handles, agent_name, notif_id, start_time)
+                
+
         return done_req_ids
 
     def start_load_kv(self, metadata: NixlConnectorMetadata):
@@ -1206,15 +1230,50 @@ class NixlConnectorWorker:
             remote_xfer_side_handle,
             remote_block_descs_ids,
             notif_msg=notif_id,
+            skip_desc_merge=True,
         )
 
         # Begin async xfer.
-        self.nixl_wrapper.transfer(handle)
+        # start = time.perf_counter()
+        # self.nixl_wrapper.transfer(handle)
+        # end = time.perf_counter()
+        
+        # ROB's PATCH: BATCHING THE TRANSFER
+        # Prepare transfer with Nixl.
+        CHUNK_SIZE = 500
+        handles = []
+        # NOTE: this is a hack to make make_prepped_xfer into threads so that
+        # different workers are allocated for each chuck. Without this change,
+        # nixl was allocating the same worker (0) for all the chunks and the
+        # overall launch time was >300 ms.
+        for i in range(0, len(local_block_descs_ids), CHUNK_SIZE):
+            handle = self.nixl_wrapper.make_prepped_xfer(
+                "READ",
+                local_xfer_side_handle,
+                local_block_descs_ids[i:i + CHUNK_SIZE],
+                remote_xfer_side_handle,
+                remote_block_descs_ids[i:i + CHUNK_SIZE],
+                skip_desc_merge=True,
+            )
+            handles.append(handle)
 
-        # Use handle to check completion in future step().
-        # TODO (NickLucche) surface xfer elapsed time
-        self._recving_transfers[request_id].append(
-            (handle, time.perf_counter()))
+        # Begin async xfer.
+        start = time.perf_counter()
+        self.nixl_wrapper.transfer_batched(handles)
+        end = time.perf_counter()
+        
+        logger.info("========== TRANSFER: %s ==========", end - start)
+
+        # # Use handle to check completion in future step().
+        # # TODO (NickLucche) surface xfer elapsed time
+        # self._recving_transfers[request_id].append(
+        #     (handle, time.perf_counter()))
+        
+        # Keep track of ongoing transfers.
+        remote_rank = self.tp_rank // tp_ratio
+        agent_name = self._remote_agents[dst_engine_id][remote_rank]
+        assert request_id not in self._recving_transfers
+        self._recving_transfers[request_id] = (handles, agent_name, notif_id, time.perf_counter())
 
     def _get_block_descs_ids(self,
                              engine_id: str,

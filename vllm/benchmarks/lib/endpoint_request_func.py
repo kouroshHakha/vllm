@@ -144,6 +144,8 @@ async def async_request_openai_completions(
                         elif usage := data.get("usage"):
                             output.output_tokens = usage.get(
                                 "completion_tokens")
+                            output.prompt_len = usage.get(
+                                "prompt_tokens")
                 if first_chunk_received:
                     output.success = True
                 else:
