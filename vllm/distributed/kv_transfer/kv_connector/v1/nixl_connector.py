@@ -1095,6 +1095,7 @@ class NixlConnectorWorker:
                 self.nixl_wrapper.send_notif(agent_name, notif_id)
                 done_req_ids.add(req_id)
                 del transfers[req_id]
+                logger.info("========== transmission time: %s ==========", time.perf_counter() - start_time) 
             else:
                 transfers[req_id] = (new_handles, agent_name, notif_id, start_time)
                 
@@ -1222,16 +1223,16 @@ class NixlConnectorWorker:
 
         assert len(local_block_descs_ids) == len(remote_block_descs_ids)
 
-        # Prepare transfer with Nixl.
-        handle = self.nixl_wrapper.make_prepped_xfer(
-            "READ",
-            local_xfer_side_handle,
-            local_block_descs_ids,
-            remote_xfer_side_handle,
-            remote_block_descs_ids,
-            notif_msg=notif_id,
-            skip_desc_merge=True,
-        )
+        # # Prepare transfer with Nixl.
+        # handle = self.nixl_wrapper.make_prepped_xfer(
+        #     "READ",
+        #     local_xfer_side_handle,
+        #     local_block_descs_ids,
+        #     remote_xfer_side_handle,
+        #     remote_block_descs_ids,
+        #     notif_msg=notif_id,
+        #     skip_desc_merge=True,
+        # )
 
         # Begin async xfer.
         # start = time.perf_counter()
@@ -1240,7 +1241,7 @@ class NixlConnectorWorker:
         
         # ROB's PATCH: BATCHING THE TRANSFER
         # Prepare transfer with Nixl.
-        CHUNK_SIZE = 500
+        CHUNK_SIZE = len(local_block_descs_ids) // 10
         handles = []
         # NOTE: this is a hack to make make_prepped_xfer into threads so that
         # different workers are allocated for each chuck. Without this change,
@@ -1263,6 +1264,7 @@ class NixlConnectorWorker:
         end = time.perf_counter()
         
         logger.info("========== TRANSFER: %s ==========", end - start)
+        logger.info("========== LocalBlockIDSLen: %s ==========", len(local_block_descs_ids))
 
         # # Use handle to check completion in future step().
         # # TODO (NickLucche) surface xfer elapsed time
