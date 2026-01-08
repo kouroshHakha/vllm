@@ -72,7 +72,7 @@ class InferenceEngine:
         self.llm = vllm.AsyncLLMEngine.from_engine_args(
             vllm.AsyncEngineArgs(
                 model=MODEL_NAME,
-                enforce_eager=True,
+                enforce_eager=False,
                 tensor_parallel_size=1,
                 data_parallel_size=dp_size,
                 data_parallel_rank=dp_rank,
