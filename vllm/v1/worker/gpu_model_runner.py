@@ -5349,6 +5349,26 @@ class GPUModelRunner(
         # load weights from disk if none are provided
         if weights_iterator is None:
             model_loader = get_model_loader(self.load_config)
+
+            from vllm.model_executor.model_loader.sharded_state_loader import (
+                ShardedStateLoader,
+            )
+
+            if isinstance(model_loader, ShardedStateLoader):
+                # Presharded files hold kernel-format tensors; the loader's
+                # load_weights copies them straight into the live (already
+                # processed) params — identical to the boot-time path. Used by
+                # snapshot mode to reload weights after a process restore.
+                if weights_path is not None:
+                    self.model_config.model = weights_path
+                logger.info_once("Reloading weights inplace (sharded_state)...")
+                model_loader.load_weights(model, self.model_config)
+                logger.info_once(
+                    "Reloading (sharded_state) took %.2f seconds",
+                    time.perf_counter() - counter_before_reloading,
+                )
+                return
+
             if not hasattr(model_loader, "get_all_weights"):
                 raise NotImplementedError(
                     f"Model reloading with `{self.load_config.load_format}` format"

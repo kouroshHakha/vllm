@@ -70,7 +70,13 @@ class ShardedStateLoader(BaseModelLoader):
                 same_storage_groups[tensor.device, ptr].append((key, tensor))
 
         def get_end_ptr(tensor: torch.Tensor) -> int:
-            return tensor.view(-1)[-1].data_ptr() + tensor.element_size()
+            # Non-contiguous tensors (e.g. transposed kernel-format quant
+            # weights after process_weights_after_loading) can't be view(-1)'d;
+            # fall back to the storage extent.
+            try:
+                return tensor.view(-1)[-1].data_ptr() + tensor.element_size()
+            except RuntimeError:
+                return tensor.data_ptr() + tensor.untyped_storage().nbytes()
 
         result: dict[str, torch.Tensor] = {}
         for group in same_storage_groups.values():
@@ -204,7 +210,9 @@ class ShardedStateLoader(BaseModelLoader):
                 part_idx += 1
                 total_size = 0
                 state_dict_part = {}
-            state_dict_part[key] = tensor
+            # kernel-format (post-processed) tensors can be non-contiguous;
+            # safetensors save_file requires contiguous storage.
+            state_dict_part[key] = tensor.contiguous()
             total_size += param_size
         if len(state_dict_part) > 0:
             filename = pattern.format(rank=rank, part=part_idx)

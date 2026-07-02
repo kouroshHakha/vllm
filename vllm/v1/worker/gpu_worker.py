@@ -225,8 +225,20 @@ class Worker(WorkerBase):
 
         # Graphs bake comm-buffer device pointers; they cannot survive comm
         # teardown. Release them first (re-captured in snapshot_recapture).
-        if self.model_runner.cudagraph_manager is not None:
-            self.model_runner.cudagraph_manager.release_graphs()
+        # v2 runner: CudaGraphManager owns full graphs. v1 runner: everything
+        # lives in CUDAGraphWrapper instances.
+        cg_manager = getattr(self.model_runner, "cudagraph_manager", None)
+        if cg_manager is not None:
+            cg_manager.release_graphs()
+        else:
+            from vllm.compilation.cuda_graph import CUDAGraphWrapper
+            from vllm.platforms import current_platform
+
+            CUDAGraphWrapper.clear_all_graphs()
+            # Fresh mempool: the caching allocator refuses re-capture into a
+            # pool whose previous graphs were destroyed.
+            type(current_platform)._global_graph_pool = None
+            CUDAGraphWrapper.refresh_graph_pool()
 
         # Fusion-pass allreduce workspaces (module-level, lazily re-created).
         destroy_fi_ar_workspace()
@@ -298,10 +310,7 @@ class Worker(WorkerBase):
     def snapshot_recapture(self) -> None:
         """Re-capture CUDA graphs after snapshot_thaw + wake_up +
         reload_weights (fresh graphs against the re-created comm buffers)."""
-        if (
-            self.model_runner.cudagraph_manager is not None
-            and not self.model_config.enforce_eager
-        ):
+        if not self.model_config.enforce_eager:
             self.model_runner.capture_model()
         logger.info("snapshot_recapture: CUDA graphs re-captured")
 

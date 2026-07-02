@@ -60,6 +60,18 @@ class BaseModelLoader(ABC):
 
             log_model_inspection(model)
 
+            # sharded_state checkpoints hold POST-processed (kernel-format)
+            # tensors saved after process_weights_after_loading. For quantized
+            # models the processed shapes differ from checkpoint shapes, so:
+            # process first (creating kernel-format tensors), then copy_ the
+            # presharded bytes straight into them, skipping the second
+            # processing pass. (Makes quant sharded_state round-trip work.)
+            if type(self).__name__ == "ShardedStateLoader":
+                process_weights_after_loading(model, model_config, target_device)
+                logger.debug("Loading (presharded) weights on %s ...", load_device)
+                self.load_weights(model, model_config)
+                return model.eval()
+
             logger.debug("Loading weights on %s ...", load_device)
             self.load_weights(model, model_config)
 
