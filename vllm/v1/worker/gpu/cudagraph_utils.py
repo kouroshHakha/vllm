@@ -212,6 +212,32 @@ class CudaGraphManager:
     def needs_capture(self) -> bool:
         return len(self._capture_descs) > 0
 
+    def release_graphs(self) -> None:
+        """Drop every captured CUDA graph (full, piecewise, breakable).
+
+        Used by snapshot mode before a process checkpoint: captured graphs bake
+        device pointers of communication buffers (NCCL / custom allreduce /
+        flashinfer workspaces), which do not survive comm teardown + re-init.
+        After restore, `capture_model()` can be re-run to capture fresh graphs
+        (`_capture_descs` is preserved, so `needs_capture()` stays true).
+        """
+        from vllm.compilation.cuda_graph import CUDAGraphWrapper
+
+        self.graphs.clear()
+        CUDAGraphWrapper.clear_all_graphs()
+        self.breakable_cg_runner = None
+        self._graphs_captured = False
+
+        # The caching allocator refuses to begin a new capture into a mempool
+        # whose previous graphs were destroyed (use_count assert). Swap in a
+        # fresh global pool so re-capture (full AND piecewise wrappers, which
+        # cached the pool at construction) uses clean bookkeeping.
+        type(current_platform)._global_graph_pool = None
+        self.pool = (
+            current_platform.get_global_graph_pool() if self.cudagraph_mode else None
+        )
+        CUDAGraphWrapper.refresh_graph_pool()
+
     @torch.inference_mode()
     def capture(
         self,

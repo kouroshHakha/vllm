@@ -315,7 +315,23 @@ class CustomAllreduce:
         group: ProcessGroup | None = None,
         rank: int | None = None,
     ) -> None:
+        """Free this rank's buffer AND close the IPC-imported peer mappings.
+
+        Closing the imports matters for snapshot mode: per-process GPU
+        checkpointing cannot copy IPC/peer-imported memory, so a leaked
+        import MMU-faults the checkpoint (Xid 31 on the exporting GPU).
+        """
         if rank is None:
             rank = dist.get_rank(group=group)
-        if ops is not None:
-            ops.free_shared_buffer(pointers[rank])
+        if ops is None:
+            return
+        from vllm.distributed.device_communicators.cuda_wrapper import (
+            CudaRTLibrary,
+        )
+
+        cudart = CudaRTLibrary()
+        for i, ptr in enumerate(pointers):
+            if i == rank:
+                ops.free_shared_buffer(ptr)
+            else:
+                cudart.cudaIpcCloseMemHandle(ptr)

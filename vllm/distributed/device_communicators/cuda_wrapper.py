@@ -78,6 +78,12 @@ class CudaRTLibrary:
             cudaError_t,
             [ctypes.POINTER(ctypes.c_void_p), cudaIpcMemHandle_t, ctypes.c_uint],
         ),
+        # cudaError_t cudaIpcCloseMemHandle ( void* devPtr ) # noqa
+        Function(
+            "cudaIpcCloseMemHandle",
+            cudaError_t,
+            [ctypes.c_void_p],
+        ),
     ]
 
     # https://rocm.docs.amd.com/projects/HIPIFY/en/latest/tables/CUDA_Runtime_API_functions_supported_by_HIP.html # noqa
@@ -92,6 +98,7 @@ class CudaRTLibrary:
         "cudaMemcpy": "hipMemcpy",
         "cudaIpcGetMemHandle": "hipIpcGetMemHandle",
         "cudaIpcOpenMemHandle": "hipIpcOpenMemHandle",
+        "cudaIpcCloseMemHandle": "hipIpcCloseMemHandle",
     }
 
     # class attribute to store the mapping from the path to the library
@@ -188,3 +195,6 @@ class CudaRTLibrary:
             )
         )
         return devPtr
+
+    def cudaIpcCloseMemHandle(self, devPtr: ctypes.c_void_p | int) -> None:
+        self.CUDART_CHECK(self.funcs["cudaIpcCloseMemHandle"](devPtr))

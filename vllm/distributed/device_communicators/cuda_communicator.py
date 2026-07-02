@@ -407,7 +407,10 @@ class CudaCommunicator(DeviceCommunicatorBase):
             self.pynccl_comm.destroy()
             self.pynccl_comm = None
         if self.ca_comm is not None:
+            self.ca_comm.close()
             self.ca_comm = None
+        if self.symm_mem_comm is not None:
+            self.symm_mem_comm = None
         if self.fi_ar_comm is not None:
             self.fi_ar_comm.destroy()
             self.fi_ar_comm = None

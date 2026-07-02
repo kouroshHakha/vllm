@@ -199,6 +199,112 @@ class Worker(WorkerBase):
         if tags is None or "kv_cache" in tags:
             self.model_runner.post_kv_cache_wake_up()
 
+    def snapshot_freeze(self) -> None:
+        """Prepare this worker for a process checkpoint (e.g. CRIU +
+        cuda-checkpoint).
+
+        Drops all captured CUDA graphs and tears down every communication
+        backend (NCCL process groups, pynccl, custom allreduce, symmetric
+        memory, flashinfer allreduce workspaces), so the process holds NO
+        CUDA-IPC / peer-imported / multicast GPU state — the classes of
+        memory that per-process GPU checkpointing cannot copy.
+
+        Must be called after `sleep(level=2)`. The inverse operations are
+        `snapshot_thaw()` (+ `wake_up`, `reload_weights`,
+        `snapshot_recapture`).
+        """
+        import gc
+
+        from vllm.distributed.device_communicators.flashinfer_all_reduce import (
+            destroy_fi_ar_workspace,
+        )
+        from vllm.distributed.parallel_state import (
+            destroy_distributed_environment,
+            destroy_model_parallel,
+        )
+
+        # Graphs bake comm-buffer device pointers; they cannot survive comm
+        # teardown. Release them first (re-captured in snapshot_recapture).
+        if self.model_runner.cudagraph_manager is not None:
+            self.model_runner.cudagraph_manager.release_graphs()
+
+        # Fusion-pass allreduce workspaces (module-level, lazily re-created).
+        destroy_fi_ar_workspace()
+
+        # Tear down model-parallel groups (pynccl / custom AR / symm mem /
+        # all2all) and the world process group (NCCL comms incl. NVLS/P2P).
+        destroy_model_parallel()
+        destroy_distributed_environment()
+
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        logger.info("snapshot_freeze: graphs released, comm backends destroyed")
+
+    def snapshot_thaw(self, distributed_init_method: str | None = None) -> None:
+        """Re-establish distributed state after a process restore.
+
+        Re-initializes the world process group and model-parallel groups
+        (identically to worker boot), re-creating pynccl / custom allreduce /
+        symmetric memory communicators. Pass a fresh
+        `distributed_init_method` (e.g. "tcp://127.0.0.1:<new_port>") since
+        the original store port may linger in TIME_WAIT.
+
+        Call order after restore: snapshot_thaw -> wake_up -> reload_weights
+        -> snapshot_recapture.
+        """
+        from vllm.config import set_current_vllm_config
+
+        # Some NCCL resource classes cannot be (re)created in a restored CUDA
+        # context on current drivers (NVLS multicast objects; cuMem/fabric-
+        # handle buffer exports). NCCL reads these env vars at comm-init time,
+        # so overriding here affects only the re-created communicators — the
+        # original boot keeps full defaults. P2P stays enabled (legacy
+        # cudaIpc transport at NVLink speed).
+        os.environ["NCCL_NVLS_ENABLE"] = os.environ.get(
+            "VLLM_SNAPSHOT_THAW_NCCL_NVLS", "0"
+        )
+        os.environ["NCCL_CUMEM_ENABLE"] = os.environ.get(
+            "VLLM_SNAPSHOT_THAW_NCCL_CUMEM", "0"
+        )
+        # NCCL's P2P transport fails ncclCommInitRank ("unhandled cuda error")
+        # in a restored context; SHM transport re-inits fine. Decode-critical
+        # allreduces still go through custom-AR (rebuilt over fresh CUDA IPC),
+        # so this mainly affects large-message collectives.
+        os.environ["NCCL_P2P_DISABLE"] = os.environ.get(
+            "VLLM_SNAPSHOT_THAW_NCCL_P2P_DISABLE", "1"
+        )
+
+        # Compiled code bakes group names ("tp:0") into custom-op calls; reset
+        # the unique-name counter so re-created groups register under the SAME
+        # names (otherwise the registry serves dead weakrefs -> "Group tp:0 is
+        # destroyed" on the first collective).
+        from vllm.distributed import parallel_state as _ps
+
+        _ps._group_name_counter.clear()
+
+        # Group/communicator construction instantiates CustomOps, which
+        # require the active vllm config context (present during worker boot,
+        # absent in an RPC handler).
+        with set_current_vllm_config(self.vllm_config):
+            init_worker_distributed_environment(
+                self.vllm_config,
+                self.rank,
+                distributed_init_method or self.distributed_init_method,
+                self.local_rank,
+            )
+        logger.info("snapshot_thaw: distributed environment re-initialized")
+
+    def snapshot_recapture(self) -> None:
+        """Re-capture CUDA graphs after snapshot_thaw + wake_up +
+        reload_weights (fresh graphs against the re-created comm buffers)."""
+        if (
+            self.model_runner.cudagraph_manager is not None
+            and not self.model_config.enforce_eager
+        ):
+            self.model_runner.capture_model()
+        logger.info("snapshot_recapture: CUDA graphs re-captured")
+
     def _maybe_get_memory_pool_context(self, tag: str) -> AbstractContextManager:
         if (
             current_platform.is_cuda_alike()

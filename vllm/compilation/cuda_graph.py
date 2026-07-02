@@ -175,6 +175,16 @@ class CUDAGraphWrapper:
         for instance in list(cls._all_instances):
             instance.clear_graphs()
 
+    @classmethod
+    def refresh_graph_pool(cls) -> None:
+        """Point all wrappers at the current platform graph pool (used by
+        snapshot mode, which swaps in a fresh pool before re-capture)."""
+        from vllm.platforms import current_platform
+
+        pool = current_platform.get_global_graph_pool()
+        for instance in list(cls._all_instances):
+            instance.graph_pool = pool
+
     def __init__(
         self,
         runnable: Callable[..., Any],

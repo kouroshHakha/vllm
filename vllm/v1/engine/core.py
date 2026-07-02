@@ -1118,6 +1118,22 @@ class EngineCoreProc(EngineCore):
     def run_engine_core(*args, dp_rank: int = 0, local_dp_rank: int = 0, **kwargs):
         """Launch EngineCore busy loop in background process."""
 
+        # SNAPSHOT-COMPAT: at TP>1 this process incidentally runs cuInit
+        # (leaving /dev/nvidia* VMAs) without ever creating a CUDA context.
+        # CRIU cannot dump device VMAs and cuda-checkpoint refuses processes
+        # without a context. Creating a tiny real context here makes
+        # cuda-checkpoint own (and release) all of this process's device
+        # mappings, so the whole tree is checkpointable.
+        if os.environ.get("VLLM_ENGINE_CORE_CUDA_INIT"):
+            try:
+                import torch as _torch
+
+                global _snapshot_cuda_ctx_anchor
+                _snapshot_cuda_ctx_anchor = _torch.zeros(1, device="cuda")
+                _torch.cuda.synchronize()
+            except Exception:
+                logger.warning("VLLM_ENGINE_CORE_CUDA_INIT failed", exc_info=True)
+
         # Ensure we can serialize transformer config after spawning
         maybe_register_config_serialize_by_value()
 
