@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Any, NamedTuple, Protocol
 
 import torch
+
+import vllm.envs as envs
 import torch.nn as nn
 from tqdm import tqdm
 
@@ -294,7 +296,9 @@ class CudaGraphManager:
                         assert desc not in self.graphs, (
                             f"Graph already captured for {desc}"
                         )
-                        graph = torch.cuda.CUDAGraph()
+                        graph = torch.cuda.CUDAGraph(
+                            keep_graph=envs.VLLM_KEEP_RAW_CUDAGRAPHS
+                        )
                         # Sync offloader's copy stream before capture.
                         # Ensure any pre-capture prefetches from offloader are complete.
                         get_offloader().sync_prev_onload()

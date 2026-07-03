@@ -102,6 +102,7 @@ if TYPE_CHECKING:
     VLLM_LORA_RESOLVER_CACHE_DIR: str | None = None
     VLLM_LORA_RESOLVER_HF_REPO_LIST: str | None = None
     VLLM_USE_AOT_COMPILE: bool = False
+    VLLM_KEEP_RAW_CUDAGRAPHS: bool = False
     VLLM_USE_BYTECODE_HOOK: bool = True
     VLLM_FORCE_AOT_LOAD: bool = False
     VLLM_USE_MEGA_AOT_ARTIFACT: bool = False
@@ -733,6 +734,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # compilation is done in warmup phase and the compilation will be
     # reused in subsequent calls.
     "VLLM_USE_AOT_COMPILE": use_aot_compile,
+    # Keep raw cudaGraph_t handles after instantiation so captured
+    # graphs stay introspectable via CUDAGraph.raw_cuda_graph()
+    # (GPU-state snapshot research). Host-memory cost only.
+    "VLLM_KEEP_RAW_CUDAGRAPHS": lambda: os.environ.get(
+        "VLLM_KEEP_RAW_CUDAGRAPHS", "0") == "1",
     # Feature flag to enable/disable bytecode in
     # TorchCompileWithNoGuardsWrapper.
     "VLLM_USE_BYTECODE_HOOK": lambda: bool(

@@ -290,7 +290,12 @@ class CUDAGraphWrapper:
                 x.data_ptr() for x in args if isinstance(x, torch.Tensor)
             ]
             entry.input_addresses = input_addresses
-            cudagraph = torch.cuda.CUDAGraph()
+            # keep_graph retains the raw cudaGraph_t after instantiate
+            # (snapshot/graph-serialization research: walkable via
+            # raw_cuda_graph()); costs host memory only.
+            cudagraph = torch.cuda.CUDAGraph(
+                keep_graph=envs.VLLM_KEEP_RAW_CUDAGRAPHS
+            )
 
             with ExitStack() as stack:
                 if self.cudagraph_options.gc_disable:

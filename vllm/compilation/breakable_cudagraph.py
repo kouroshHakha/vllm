@@ -174,7 +174,7 @@ class BreakableCUDAGraphCapture:
 
     def _begin_segment(self) -> None:
         assert not self._capturing
-        g = torch.cuda.CUDAGraph()
+        g = torch.cuda.CUDAGraph(keep_graph=envs.VLLM_KEEP_RAW_CUDAGRAPHS)
         if self.pool is not None:
             g.capture_begin(pool=self.pool)
         else:
