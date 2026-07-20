@@ -2110,6 +2110,10 @@ def compile_factors() -> dict[str, object]:
         "VLLM_DEBUG_DUMP_PATH",
         "VLLM_PORT",
         "VLLM_CACHE_ROOT",
+        # Unused-on-GPU cache path (XLA cache is TPU-only) with the same
+        # XDG-derived value as VLLM_CACHE_ROOT; a cache path must not affect
+        # the compiled graph.
+        "VLLM_XLA_CACHE_PATH",
         # Runtime memory-plan persistence; does not affect compiled graphs.
         "VLLM_ENABLE_STARTUP_PLAN",
         "LD_LIBRARY_PATH",
